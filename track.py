@@ -1,5 +1,32 @@
 import argparse
 
+
+
+
+
+
+
+
+from mmdet.apis import init_detector, inference_detector, show_result_pyplot
+import mmcv
+
+import cv2
+
+config_file = './DUPA/faster_rcnn_r50_fpn_1x_coco.py'
+checkpoint_file = './DUPA/faster_rcnn_r50_fpn_1x_coco_20200130-047c8118.pth'
+
+# build the model from a config file and a checkpoint file
+model1 = init_detector(config_file, checkpoint_file, device='cuda:0')
+
+
+
+
+
+
+
+
+
+
 import os
 # limit the number of cpus used by high performance libraries
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -14,7 +41,6 @@ from pathlib import Path
 import torch
 import torch.backends.cudnn as cudnn
 from numpy import random
-
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # yolov5 strongsort root directory
@@ -31,16 +57,31 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from yolov7.models.experimental import attempt_load
 from yolov7.utils.datasets import LoadImages, LoadStreams
-from yolov7.utils.general import (check_img_size, non_max_suppression, scale_coords, check_requirements, cv2,
-                                  check_imshow, xyxy2xywh, increment_path, strip_optimizer, colorstr, check_file)
+from yolov7.utils.general import (check_img_size, non_max_suppression, 
+                                  scale_coords, check_requirements, cv2,
+                                  check_imshow, xyxy2xywh, increment_path, 
+                                  strip_optimizer, colorstr, check_file)
 from yolov7.utils.torch_utils import select_device, time_synchronized
 from yolov7.utils.plots import plot_one_box
+
 from strong_sort.utils.parser import get_config
 from strong_sort.strong_sort import StrongSORT
 
 
 VID_FORMATS = 'asf', 'avi', 'gif', 'm4v', 'mkv', 'mov', 'mp4', 'mpeg', 'mpg', 'ts', 'wmv'  # include video suffixes
 
+
+
+def convertDetectionsFormat(detections, confidence, device):
+    convertedDetections = []
+
+    for i, class_array in enumerate(detections): 
+        for (x1, y1, x2, y2, conf) in class_array:
+            if conf < confidence:
+                continue
+            convertedDetections.append(torch.tensor([x1, y1, x2, y2, conf, i], device=device))
+
+    return torch.stack(convertedDetections)
 
 @torch.no_grad()
 def run(
@@ -105,6 +146,16 @@ def run(
     stride = model.stride.max()  # model stride
     imgsz = check_img_size(imgsz[0], s=stride.cpu().numpy())  # check image size
 
+
+
+    cap = cv2.VideoCapture(source)
+
+    # Check if camera opened successfully
+    if (cap.isOpened()== False):
+        print("Error opening video stream or file")
+
+
+
     # Dataloader
     if webcam:
         show_vid = check_imshow()
@@ -115,6 +166,15 @@ def run(
         dataset = LoadImages(source, img_size=imgsz, stride=stride)
         nr_sources = 1
     vid_path, vid_writer, txt_path = [None] * nr_sources, [None] * nr_sources, [None] * nr_sources
+
+
+
+
+
+
+
+
+
 
     # initialize StrongSORT
     cfg = get_config()
@@ -146,27 +206,58 @@ def run(
     # Run tracking
     dt, seen = [0.0, 0.0, 0.0, 0.0], 0
     curr_frames, prev_frames = [None] * nr_sources, [None] * nr_sources
+
+    
+
+
+
     for frame_idx, (path, im, im0s, vid_cap) in enumerate(dataset):
         s = ''
         t1 = time_synchronized()
+
         im = torch.from_numpy(im).to(device)
         im = im.half() if half else im.float()  # uint8 to fp16/32
         im /= 255.0  # 0 - 255 to 0.0 - 1.0
         if len(im.shape) == 3:
             im = im[None]  # expand for batch dim
+
         t2 = time_synchronized()
         dt[0] += t2 - t1
 
         # Inference
-        visualize = increment_path(save_dir / Path(path[0]).stem, mkdir=True) if visualize else False
-        pred = model(im)
+        # visualize = increment_path(save_dir / Path(path[0]).stem, mkdir=True) if visualize else False
+
+
+
+
+        ret, frame = cap.read()
+
+
+
+
+
+        # pred = model(im)
+        pred1 = inference_detector(model1, frame)
+        pred = [torch.zeros((0, 6), device=device)]
+
+        pred[0] = convertDetectionsFormat(pred1, 0.4, device)
+
+        # show_result_pyplot(model1, frame, pred1, score_thr=0.0)
+
+
         t3 = time_synchronized()
         dt[1] += t3 - t2
 
         # Apply NMS
-        pred = non_max_suppression(pred[0], conf_thres, iou_thres, classes, agnostic_nms)
+        # pred = non_max_suppression(pred[0], conf_thres, iou_thres, classes, agnostic_nms)  # dupa 
         dt[2] += time_synchronized() - t3
         
+
+
+        # import pdb; pdb.set_trace()
+
+
+
         # Process detections
         for i, det in enumerate(pred):  # detections per image
             seen += 1
@@ -245,7 +336,7 @@ def run(
                                 txt_file_name = txt_file_name if (isinstance(path, list) and len(path) > 1) else ''
                                 save_one_box(bboxes, imc, file=save_dir / 'crops' / txt_file_name / names[c] / f'{id}' / f'{p.stem}.jpg', BGR=True)
 
-                print(f'{s}Done. YOLO:({t3 - t2:.3f}s), StrongSORT:({t5 - t4:.3f}s)')
+                print(f'{s}Done. SwinTransformer:({t3 - t2:.3f}s), StrongSORT:({t5 - t4:.3f}s)')
 
             else:
                 strongsort_list[i].increment_ages()
@@ -273,6 +364,23 @@ def run(
                 vid_writer[i].write(im0)
 
             prev_frames[i] = curr_frames[i]
+
+
+
+
+
+
+
+
+
+
+    # When everything done, release the video capture object
+    cap.release()
+
+
+
+
+
 
     # Print results
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
