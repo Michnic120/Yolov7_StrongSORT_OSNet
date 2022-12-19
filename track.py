@@ -5,12 +5,10 @@ import argparse
 
 
 
-
+from typing import List, Union
 
 from mmdet.apis import init_detector, inference_detector, show_result_pyplot
 import mmcv
-
-import cv2
 
 config_file = './DUPA/faster_rcnn_r50_fpn_1x_coco.py'
 checkpoint_file = './DUPA/faster_rcnn_r50_fpn_1x_coco_20200130-047c8118.pth'
@@ -72,16 +70,27 @@ VID_FORMATS = 'asf', 'avi', 'gif', 'm4v', 'mkv', 'mov', 'mp4', 'mpeg', 'mpg', 't
 
 
 
-def convertDetectionsFormat(detections, confidence, device):
-    convertedDetections = []
+def convert_detections_format(detections, device):
+    converted_detections = []
 
     for i, class_array in enumerate(detections): 
         for (x1, y1, x2, y2, conf) in class_array:
-            if conf < confidence:
-                continue
-            convertedDetections.append(torch.tensor([x1, y1, x2, y2, conf, i], device=device))
+            converted_detections.append(
+                torch.tensor([x1, y1, x2, y2, conf, i], device=device))
 
-    return torch.stack(convertedDetections)
+    return torch.stack(converted_detections)
+
+
+def filter_out_detections(
+    dets,
+    conf_thres: float, 
+    classes: Union[int, List[int], None]):
+
+    mask = dets[..., 4] > conf_thres
+    dets = dets.clone().detach()[mask]
+    dets = dets[
+        (dets[:, 5:6] == torch.tensor(classes, device=dets.device)).any(1)]
+    return dets
 
 @torch.no_grad()
 def run(
@@ -147,15 +156,6 @@ def run(
     imgsz = check_img_size(imgsz[0], s=stride.cpu().numpy())  # check image size
 
 
-
-    cap = cv2.VideoCapture(source)
-
-    # Check if camera opened successfully
-    if (cap.isOpened()== False):
-        print("Error opening video stream or file")
-
-
-
     # Dataloader
     if webcam:
         show_vid = check_imshow()
@@ -209,11 +209,11 @@ def run(
 
     
 
-
-
-    for frame_idx, (path, im, im0s, vid_cap) in enumerate(dataset):
+    for frame_idx, (path, im, im1, im0s, vid_cap) in enumerate(dataset):
         s = ''
         t1 = time_synchronized()
+
+        # to jest do wywalenia, ale zostawiam, żeby w dalszej części inferencja dobrze poszła XD
 
         im = torch.from_numpy(im).to(device)
         im = im.half() if half else im.float()  # uint8 to fp16/32
@@ -228,22 +228,18 @@ def run(
         # visualize = increment_path(save_dir / Path(path[0]).stem, mkdir=True) if visualize else False
 
 
-
-
-        ret, frame = cap.read()
-
-
-
-
-
         # pred = model(im)
-        pred1 = inference_detector(model1, frame)
+        # pred1 = inference_detector(model1, frame)
+
+ 
+        # import pdb; pdb.set_trace()
+        pred1 = inference_detector(model1, im1)
+
         pred = [torch.zeros((0, 6), device=device)]
 
-        pred[0] = convertDetectionsFormat(pred1, 0.4, device)
-
+        pred[0] = convert_detections_format(pred1, device)
+        pred[0] = filter_out_detections(pred[0], conf_thres, classes)
         # show_result_pyplot(model1, frame, pred1, score_thr=0.0)
-
 
         t3 = time_synchronized()
         dt[1] += t3 - t2
@@ -252,11 +248,6 @@ def run(
         # pred = non_max_suppression(pred[0], conf_thres, iou_thres, classes, agnostic_nms)  # dupa 
         dt[2] += time_synchronized() - t3
         
-
-
-        # import pdb; pdb.set_trace()
-
-
 
         # Process detections
         for i, det in enumerate(pred):  # detections per image
@@ -287,7 +278,6 @@ def run(
 
             if cfg.STRONGSORT.ECC:  # camera motion compensation
                 strongsort_list[i].tracker.camera_update(prev_frames[i], curr_frames[i])
-
             if det is not None and len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(im.shape[2:], det[:, :4], im0.shape).round()
@@ -297,7 +287,7 @@ def run(
                     n = (det[:, -1] == c).sum()  # detections per class
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
 
-                xywhs = xyxy2xywh(det[:, 0:4])
+                xywhs = xyxy2xywh(det[:, :4])
                 confs = det[:, 4]
                 clss = det[:, 5]
 
@@ -364,23 +354,6 @@ def run(
                 vid_writer[i].write(im0)
 
             prev_frames[i] = curr_frames[i]
-
-
-
-
-
-
-
-
-
-
-    # When everything done, release the video capture object
-    cap.release()
-
-
-
-
-
 
     # Print results
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
